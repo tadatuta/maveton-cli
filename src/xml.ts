@@ -1,24 +1,36 @@
 import { DOMParser, XMLSerializer, onWarningStopParsing } from '@xmldom/xmldom';
+import { SaxesParser } from 'saxes';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import { CliError, NS, isPodcast, xmlChars } from './core.ts';
 
 export type { Document, Element, Node };
 export function parseXml(xml: string): Document {
-  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new CliError('XML_DTD', 'DTD и объявления сущностей не поддерживаются.', 1);
   if (!xmlChars(xml)) throw new CliError('XML_CHAR', 'Недопустимый символ XML.', 1);
   try {
+    // Validate before building a DOM: xmldom is intentionally tolerant of some XML errors.
+    // SAX events distinguish a real DTD from the same characters in comments or CDATA.
+    const parser = new SaxesParser({ xmlns: true, defaultXMLVersion: '1.0', forceXMLVersion: true });
+    let depth = 0;
+    parser.on('error', error => { throw error; });
+    parser.on('doctype', () => { throw new CliError('XML_DTD', 'DTD и объявления сущностей не поддерживаются.', 1); });
+    parser.on('opentag', () => { if (++depth > 64) throw new Error('Глубина XML больше 64.'); });
+    parser.on('closetag', () => { depth--; });
+    parser.write(xml).close();
     const doc = new DOMParser({ onError: onWarningStopParsing }).parseFromString(xml, 'application/xml');
     const stack: [Node, number][] = [[doc, 0]];
     while (stack.length) {
       const [node, depth] = stack.pop()!;
-      if (depth > 64) throw new Error('Глубина XML больше 64.');
+      if (depth > 65) throw new Error('Глубина XML больше 64.');
       // xmldom may decode forbidden numeric references without reporting a parse error.
       if (node.nodeValue !== null && !xmlChars(node.nodeValue)) throw new Error('Недопустимая числовая ссылка на символ XML.');
       if (node.nodeType === 1 && Array.from((node as Element).attributes).some(attr => !xmlChars(attr.value))) throw new Error('Недопустимый символ в атрибуте XML.');
       for (let child = node.firstChild; child; child = child.nextSibling) stack.push([child, depth + 1]);
     }
     return doc;
-  } catch (e) { throw new CliError('XML_PARSE', `Некорректный XML: ${e instanceof Error ? e.message : String(e)}`, 1); }
+  } catch (e) {
+    if (e instanceof CliError) throw e;
+    throw new CliError('XML_PARSE', `Некорректный XML: ${e instanceof Error ? e.message : String(e)}`, 1);
+  }
 }
 export function children(node: Node): Element[] {
   return Array.from(node.childNodes).filter((n): n is Element => n.nodeType === 1);

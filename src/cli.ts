@@ -92,16 +92,29 @@ async function main(): Promise<void> {
   for (const input of [v.episode, v.podcast].filter((p): p is string => !!p)) if (v.output !== '-' && await sameFile(input, v.output)) throw new CliError('OUTPUT_INPUT', 'Выходной RSS не может перезаписать YAML/JSON входного описания.');
   const episode = episodeInput(parseInput(await readLocal(v.episode)), !!v.now);
   const source = v.feed ? await readFeed(v.feed) : undefined;
+  if (source !== undefined) {
+    const sourceReport = validate(source);
+    // An empty but otherwise valid channel may receive its first episode.
+    sourceReport.issues = sourceReport.issues.filter(issue => issue.code !== 'RSS_EPISODES');
+    sourceReport.errors = sourceReport.issues.filter(issue => issue.severity === 'error').length;
+    sourceReport.valid = sourceReport.errors === 0;
+    if (!sourceReport.valid || (v.strict && sourceReport.warnings)) {
+      if (v.json) process.stdout.write(JSON.stringify({ ok: false, command, phase: 'source', validation: sourceReport }, null, 2) + '\n');
+      else showReport(sourceReport);
+      process.exitCode = 1;
+      return;
+    }
+  }
   const doc = source !== undefined ? parseXml(source) : createFeed(podcastInput(parseInput(await readLocal(v.podcast!))));
   const before = select(channelOf(doc), 'item').length;
   const result = addEpisode(doc, episode);
   const report = validate(result.xml);
   const ok = report.valid && !(v.strict && report.warnings);
-  const plan = { output: v.output === '-' ? '-' : resolve(v.output), episodesBefore: before, episodesAfter: report.episodes, guid: result.guid, title: episode.title, explicitChanged: result.explicitChanged };
+  const plan = { output: v.output === '-' ? '-' : resolve(v.output), episodesBefore: before, episodesAfter: report.episodes, guid: result.guid, title: episode.title, explicitChanged: result.explicitChanged, explicitPreserved: result.explicitPreserved };
   let written: { output: string; backup?: string } | undefined;
   if (ok && !v['dry-run'] && v.output !== '-') {
-    const options = v.feed && !/^https:\/\//.test(v.feed) && source !== undefined ? { overwrite: !!v.overwrite, sourceSnapshot: { path: v.feed, content: source } } : { overwrite: !!v.overwrite };
-    written = await writeAtomic(v.output, result.xml, options);
+    const options = v.feed && !/^https:\/\//i.test(v.feed) && source !== undefined ? { overwrite: !!v.overwrite, sourceSnapshot: { path: v.feed, content: source } } : { overwrite: !!v.overwrite };
+    written = await writeAtomic(v.output, result.xml, { ...options, protectedPaths: [v.episode, v.podcast].filter((p): p is string => !!p) });
   }
   if (v.json) process.stdout.write(JSON.stringify({ ok, command, dryRun: !!v['dry-run'], plan, ...(written ? { written } : {}), validation: report }, null, 2) + '\n');
   else {
@@ -109,6 +122,7 @@ async function main(): Promise<void> {
     if (ok) {
       process.stderr.write(`${v['dry-run'] ? 'Предпросмотр' : 'Готово'}: «${episode.title}», GUID ${result.guid}; эпизодов ${before} → ${report.episodes}.\n`);
       if (result.explicitChanged) process.stderr.write('itunes:explicit подкаста изменён на true, поскольку новый выпуск explicit.\n');
+      if (result.explicitPreserved) process.stderr.write(`Для ${result.explicitPreserved} старых эпизодов/эфиров явно сохранён itunes:explicit=false.\n`);
       if (written) process.stderr.write(`RSS: ${written.output}\n${written.backup ? `Резервная копия: ${written.backup}\n` : ''}`);
       if (v.output === '-') process.stdout.write(result.xml);
     }

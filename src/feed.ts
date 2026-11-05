@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { CliError, NS, toRssDate } from './core.ts';
-import { parseXml, channelOf, append, select, textOf, serialize } from './xml.ts';
+import { CliError, NS, toRssDate, isPodcast } from './core.ts';
+import { parseXml, channelOf, append, select, textOf, serialize, children } from './xml.ts';
 import type { Document } from './xml.ts';
 import { appendTags } from './input.ts';
 import type { Podcast, Episode } from './input.ts';
@@ -32,17 +32,20 @@ export function createFeed(config: Podcast): Document {
   append(channel, 'generator', 'maveton-cli/1.0.0');
   if (config.copyright) append(channel, 'copyright', config.copyright);
   appendTags(channel, config.podcast);
-  if (!select(channel, 'guid', NS.podcast).length) append(channel, 'podcast:guid', uuidV5(config.feedUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')));
+  if (!select(channel, 'guid', NS.podcast).length) append(channel, 'podcast:guid', uuidV5(config.feedUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '')));
   return doc;
 }
-export function addEpisode(doc: Document, episode: Episode, now = new Date()): { xml: string; guid: string; explicitChanged: boolean } {
+export function addEpisode(original: Document, episode: Episode, now = new Date()): { xml: string; guid: string; explicitChanged: boolean; explicitPreserved: number } {
+  // A failed addition must not leave a caller's DOM partially modified.
+  const doc = original.cloneNode(true) as Document;
   const channel = channelOf(doc);
   const self = select(channel, 'link', NS.atom).find(el => el.getAttribute('rel') === 'self')?.getAttribute('href');
   const identity = textOf(channel, 'guid', NS.podcast) || self || textOf(channel, 'link');
   const guid = episode.guid ?? `urn:uuid:${uuidV5(episode.id ? `${identity}\0${episode.id}` : episode.enclosure.url)}`;
   const canonical = (s: string): string => { try { return new URL(s).href; } catch { return s; } };
   const items = select(channel, 'item');
-  if (items.some(item => textOf(item, 'guid') === guid || select(item, 'enclosure').some(e => canonical(e.getAttribute('url') ?? '') === canonical(episode.enclosure.url)))) throw new CliError('DUPLICATE_EPISODE', 'Эпизод с таким GUID/id или URL аудио уже существует. Обновление выпусков не поддерживается.', 1);
+  const existing = children(channel).filter(el => (!el.namespaceURI && el.localName === 'item') || (isPodcast(el.namespaceURI) && el.localName === 'liveItem'));
+  if (existing.some(item => textOf(item, 'guid') === guid) || items.some(item => select(item, 'enclosure').some(e => canonical(e.getAttribute('url') ?? '') === canonical(episode.enclosure.url)))) throw new CliError('DUPLICATE_EPISODE', 'Эпизод с таким GUID/id или URL аудио уже существует. Обновление выпусков не поддерживается.', 1);
   const item = append(channel, 'item');
   append(item, 'title', episode.title); append(item, 'description', episode.description);
   append(item, 'guid', guid, { isPermaLink: 'false' });
@@ -62,9 +65,17 @@ export function addEpisode(doc: Document, episode: Episode, now = new Date()): {
   const next = items.find(old => Date.parse(textOf(old, 'pubDate')) <= Date.parse(published));
   if (next) channel.insertBefore(item, next);
   const explicitChanged = explicit && textOf(channel, 'explicit', NS.itunes) === 'false';
-  if (explicitChanged) select(channel, 'explicit', NS.itunes)[0]!.textContent = 'true';
+  let explicitPreserved = 0;
+  if (explicitChanged) {
+    // Preserve the effective rating of episodes/live items that inherited channel=false.
+    for (const old of existing) if (!select(old, 'explicit', NS.itunes).length) {
+      append(old, 'itunes:explicit', 'false');
+      explicitPreserved++;
+    }
+    select(channel, 'explicit', NS.itunes)[0]!.textContent = 'true';
+  }
   const buildDates = select(channel, 'lastBuildDate');
   if (buildDates.length === 1) buildDates[0]!.textContent = toRssDate(now);
   else if (!buildDates.length) append(channel, 'lastBuildDate', toRssDate(now));
-  return { xml: serialize(doc), guid, explicitChanged };
+  return { xml: serialize(doc), guid, explicitChanged, explicitPreserved };
 }

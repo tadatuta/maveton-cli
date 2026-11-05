@@ -1,29 +1,42 @@
-import { open, lstat, readFile, rename, unlink, link, copyFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import type { BigIntStats } from 'node:fs';
 import { constants } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { CliError, httpsUrl } from './core.ts';
+import { CliError, httpsUrl, FEED_LIMIT } from './core.ts';
 
-export const FEED_LIMIT = 20 * 1024 * 1024;
+export { FEED_LIMIT } from './core.ts';
 export const INPUT_LIMIT = 2 * 1024 * 1024;
 function decode(data: Uint8Array): string {
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(data); }
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data); }
   catch { throw new CliError('UTF8', 'Входной файл должен быть в UTF-8.'); }
 }
-export async function readLocal(path: string, limit = INPUT_LIMIT): Promise<string> {
-  const file = await open(path, 'r');
+function unchanged(a: BigIntStats, b: BigIntStats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.mode === b.mode;
+}
+async function readOpened(file: FileHandle, limit: number): Promise<{ data: Buffer; stat: BigIntStats }> {
+  const stat = await file.stat({ bigint: true });
+  if (!stat.isFile()) throw new CliError('INPUT_FILE', 'Ожидается обычный файл.');
+  if (stat.size > BigInt(limit)) throw new CliError('INPUT_SIZE', `Файл превышает лимит ${limit} байт.`);
+  const chunks: Buffer[] = []; let size = 0;
+  for await (const chunk of file.createReadStream({ autoClose: false })) {
+    const data = chunk as Buffer; size += data.length;
+    if (size > limit) throw new CliError('INPUT_SIZE', `Файл превышает лимит ${limit} байт.`);
+    chunks.push(data);
+  }
+  if (BigInt(size) !== stat.size || !unchanged(stat, await file.stat({ bigint: true }))) throw new CliError('INPUT_CHANGED', 'Файл изменился во время чтения. Повторите команду.');
+  return { data: Buffer.concat(chunks), stat };
+}
+async function snapshot(path: string, limit: number, noFollow = false): Promise<{ data: Buffer; stat: BigIntStats }> {
+  // O_NONBLOCK prevents a FIFO from hanging before we can reject non-regular files.
+  const file = await fs.open(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0));
   try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw new CliError('INPUT_FILE', 'Ожидается обычный файл.');
-    if (stat.size > limit) throw new CliError('INPUT_SIZE', `Файл превышает лимит ${limit} байт.`);
-    const chunks: Buffer[] = []; let size = 0;
-    for await (const chunk of file.createReadStream({ autoClose: false })) {
-      const data = chunk as Buffer; size += data.length;
-      if (size > limit) throw new CliError('INPUT_SIZE', `Файл превышает лимит ${limit} байт.`);
-      chunks.push(data);
-    }
-    return decode(Buffer.concat(chunks));
+    return await readOpened(file, limit);
   } finally { await file.close(); }
+}
+export async function readLocal(path: string, limit = INPUT_LIMIT): Promise<string> {
+  return decode((await snapshot(path, limit)).data);
 }
 export async function readFeed(source: string, fetcher: typeof fetch = fetch): Promise<string> {
   if (!/^[a-z][a-z\d+.-]*:\/\//i.test(source)) return readLocal(source, FEED_LIMIT);
@@ -58,56 +71,88 @@ export async function readFeed(source: string, fetcher: typeof fetch = fetch): P
   throw new CliError('FEED_REDIRECT', 'Больше пяти перенаправлений RSS.');
 }
 export async function exists(path: string): Promise<boolean> {
-  try { await lstat(path); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
+  try { await fs.lstat(path); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
 }
 interface WriteOptions {
   overwrite?: boolean;
   sourceSnapshot?: { path: string; content: string };
+  protectedPaths?: string[];
 }
 export async function writeAtomic(path: string, data: string, options: WriteOptions = {}): Promise<{ output: string; backup?: string }> {
-  const output = resolve(path);
+  if (Buffer.byteLength(data, 'utf8') > FEED_LIMIT) throw new CliError('FEED_SIZE', 'Результат превышает лимит 20 MiB.', 1);
+  const output = `${await fs.realpath(dirname(resolve(path)))}/${basename(path)}`;
   const lockPath = `${output}.maveton.lock`;
   const temp = `${dirname(output)}/.${basename(output)}.${randomUUID()}.tmp`;
   let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
+  try { lock = await fs.open(lockPath, 'wx', 0o600); }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new CliError('OUTPUT_LOCKED', `Файл занят другим процессом: ${lockPath}. После аварии удалите lock вручную, убедившись, что процесс завершён.`);
     throw e;
   }
   let backup: string | undefined;
+  let tempCreated = false;
+  let committed = false;
+  let cleanupFailed: boolean;
+  let directory: FileHandle | undefined;
   try {
     await lock.writeFile(`${process.pid}\n`);
-    const stat = await lstat(output).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return undefined; throw e; });
+    const stat = await fs.lstat(output, { bigint: true }).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return undefined; throw e; });
     if (stat?.isSymbolicLink() || (stat && !stat.isFile())) throw new CliError('OUTPUT_TYPE', 'Запись в symlink или специальный файл запрещена.');
     if (stat && !options.overwrite) throw new CliError('OUTPUT_EXISTS', `Файл уже существует: ${output}. Для резервной копии и перезаписи добавьте --overwrite.`);
-    if (options.sourceSnapshot && (await readLocal(options.sourceSnapshot.path, FEED_LIMIT)) !== options.sourceSnapshot.content) throw new CliError('SOURCE_CHANGED', 'Исходный RSS изменился после чтения. Повторите команду с актуальным фидом.');
-    const file = await open(temp, 'wx', stat ? stat.mode & 0o777 : 0o644);
-    try { await file.writeFile(data, 'utf8'); await file.sync(); } finally { await file.close(); }
-    if (stat) {
+    const checkInputs = async (): Promise<void> => {
+      for (const input of options.protectedPaths ?? []) if (await sameFile(input, output)) throw new CliError('OUTPUT_INPUT', 'Выходной RSS не может перезаписать входное описание.');
+      if (options.sourceSnapshot && (await readLocal(options.sourceSnapshot.path, FEED_LIMIT)) !== options.sourceSnapshot.content) throw new CliError('SOURCE_CHANGED', 'Исходный RSS изменился после чтения. Повторите команду с актуальным фидом.');
+    };
+    await checkInputs();
+    const original = stat ? await snapshot(output, FEED_LIMIT, true) : undefined;
+    if (original && !unchanged(stat!, original.stat)) throw new CliError('OUTPUT_CHANGED', 'Выходной файл изменился перед записью.');
+    directory = await fs.open(dirname(output), 'r');
+    const file = await fs.open(temp, 'wx', stat ? Number(stat.mode & 0o777n) : 0o644);
+    tempCreated = true;
+    try {
+      await file.writeFile(data, 'utf8');
+      if (stat) await file.chmod(Number(stat.mode & 0o777n));
+      await file.sync();
+    } finally { await file.close(); }
+    if (original) {
       backup = `${output}.bak-${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`;
-      await copyFile(output, backup, constants.COPYFILE_EXCL);
-      // Detect an external writer between reading the input and committing the replacement.
-      const current = await lstat(output);
-      if (current.ino !== stat.ino || current.mtimeMs !== stat.mtimeMs || current.size !== stat.size) throw new CliError('OUTPUT_CHANGED', 'Выходной файл изменился во время записи; повторите операцию.');
-      await rename(temp, output);
+      // Back up the checked descriptor's bytes, never re-open an unchecked path via copyFile.
+      const saved = await fs.open(backup, 'wx', Number(original.stat.mode & 0o777n));
+      try { await saved.writeFile(original.data); await saved.chmod(Number(original.stat.mode & 0o777n)); await saved.sync(); }
+      finally { await saved.close(); }
+      await directory.sync();
+    }
+    await checkInputs();
+    if (original) {
+      const current = await snapshot(output, FEED_LIMIT, true);
+      if (!unchanged(current.stat, original.stat) || !current.data.equals(original.data)) throw new CliError('OUTPUT_CHANGED', 'Выходной файл изменился во время записи; повторите операцию.');
+      await fs.rename(temp, output);
     } else {
       // link is atomic and cannot overwrite a file created after the existence check.
-      await link(temp, output);
+      await fs.link(temp, output);
     }
-    const directory = await open(dirname(output), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
-    return backup ? { output, backup } : { output };
+    committed = true;
+    await directory.sync();
+  } catch (error) {
+    if (committed) throw new CliError('OUTPUT_COMMITTED', `RSS уже записан: ${output}. Ошибка синхронизации каталога: ${String(error)}.${backup ? ` Резервная копия: ${backup}.` : ''}`);
+    throw error;
   } finally {
-    await unlink(temp).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; });
-    await lock.close(); await unlink(lockPath);
+    // Attempt every cleanup even if one operation fails; preserve the original failure.
+    const cleanup = await Promise.allSettled([
+      tempCreated ? fs.unlink(temp).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; }) : Promise.resolve(),
+      directory?.close(), lock.close(), fs.unlink(lockPath),
+    ]);
+    cleanupFailed = cleanup.some(r => r.status === 'rejected');
   }
+  if (cleanupFailed) throw new CliError(committed ? 'OUTPUT_COMMITTED' : 'OUTPUT_CLEANUP', `${committed ? `RSS записан: ${output}. ` : ''}Не удалось полностью удалить временные файлы или lock.${backup ? ` Резервная копия: ${backup}.` : ''}`);
+  return backup ? { output, backup } : { output };
 }
 
 export async function sameFile(a: string, b: string): Promise<boolean> {
   if (resolve(a) === resolve(b)) return true;
   try {
-    const [aa, bb] = await Promise.all([lstat(a), lstat(b)]);
+    const [aa, bb] = await Promise.all([fs.stat(a), fs.stat(b)]);
     return aa.dev === bb.dev && aa.ino === bb.ino;
   } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
 }
-export const readTemplate = async (name: string): Promise<string> => readFile(new URL(`../examples/${name}`, import.meta.url), 'utf8');
+export const readTemplate = async (name: string): Promise<string> => fs.readFile(new URL(`../examples/${name}`, import.meta.url), 'utf8');

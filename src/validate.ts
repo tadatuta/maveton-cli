@@ -1,4 +1,4 @@
-import { CliError, NS, httpsUrl, email, language, integer, rssDate, isPodcast } from './core.ts';
+import { CliError, NS, httpsUrl, email, language, integer, rssDate, isPodcast, mime, FEED_LIMIT } from './core.ts';
 import type { Issue } from './core.ts';
 import { parseXml, channelOf, select, textOf, children } from './xml.ts';
 import type { Element } from './xml.ts';
@@ -19,16 +19,30 @@ export function validate(xml: string): ValidationReport {
   let episodes = 0;
   const add = (code: string, path: string, message: string, severity: Issue['severity'] = 'error'): void => { issues.push({ severity, code, path, message }); };
   try {
+    if (Buffer.byteLength(xml, 'utf8') > FEED_LIMIT) throw new CliError('FEED_SIZE', 'Результат RSS превышает лимит 20 MiB; такой файл нельзя прочитать следующим запуском.', 1);
     const doc = parseXml(xml);
     const channel = channelOf(doc);
     const root = doc.documentElement!;
+    const paths = new WeakMap<Element, string>([[channel, 'channel'], [root, '/rss']]);
+    function structure(parent: Element, names: string[], path: string): void {
+      for (const child of children(parent)) {
+        if (!child.namespaceURI && !names.includes(child.localName!)) add('RSS_ELEMENT', `${path}/${child.tagName}`, 'Недопустимый элемент RSS в этом контексте; расширения требуют namespace.');
+      }
+      if (Array.from(parent.childNodes).some(n => (n.nodeType === 3 || n.nodeType === 4) && n.nodeValue?.trim())) add('RSS_TEXT', path, 'Текст вне дочерних элементов недопустим.');
+    }
+    function empty(el: Element, path: string): void {
+      if (children(el).length || el.textContent?.trim()) add('RSS_EMPTY_ELEMENT', path, 'Этот элемент должен содержать только атрибуты.');
+    }
+    structure(root, ['channel'], '/rss');
+    structure(channel, ['title', 'link', 'description', 'language', 'copyright', 'managingEditor', 'webMaster', 'pubDate', 'lastBuildDate', 'category', 'generator', 'docs', 'cloud', 'ttl', 'image', 'rating', 'textInput', 'skipHours', 'skipDays', 'item'], 'channel');
     if (!/^\uFEFF?<\?xml\s[^?]*version\s*=\s*["']1\.0["'][^?]*encoding\s*=\s*["']UTF-8["']/i.test(xml)) add('XML_DECLARATION', '/rss', 'Нужна декларация XML 1.0 с encoding="UTF-8".');
     function field(parent: Element, name: string, ns = '', required = true): string {
       const els = select(parent, name, ns);
       const value = els[0]?.textContent?.trim() ?? '';
-      const path = `${parent.localName}/${ns ? 'itunes:' : ''}${name}`;
+      const path = `${paths.get(parent) ?? parent.localName}/${ns ? 'itunes:' : ''}${name}`;
       if (els.length > 1) add('RSS_CARDINALITY', path, 'Допускается только один элемент.');
       if (required && (!els.length || !value)) add('RSS_REQUIRED', path, 'Обязательное поле отсутствует или пусто.');
+      else if (els.length && !value) add('RSS_EMPTY', path, 'Если необязательное поле задано, оно не должно быть пустым.');
       if (els.some(el => children(el).length)) add('RSS_TEXT', path, 'Ожидается текст; HTML нужно экранировать или поместить в CDATA.');
       return value;
     }
@@ -51,12 +65,16 @@ export function validate(xml: string): ValidationReport {
     function artwork(parent: Element, required: boolean, path: string): void {
       const images = select(parent, 'image', NS.itunes);
       if ((required && !images.length) || images.length > 1) add('ITUNES_IMAGE', path, 'Нужен ровно один itunes:image на уровне подкаста и не более одного у эпизода.');
-      for (const image of images) url(image.getAttribute('href') ?? '', `${path}/@href`);
+      for (const image of images) { url(image.getAttribute('href') ?? '', `${path}/@href`); empty(image, path); }
     }
     artwork(channel, true, 'channel/itunes:image');
     const rssImages = select(channel, 'image');
     if (rssImages.length > 1) add('RSS_CARDINALITY', 'channel/image', 'Допускается один image.');
-    for (const image of rssImages) { field(image, 'title'); url(field(image, 'url'), 'channel/image/url'); url(field(image, 'link'), 'channel/image/link'); }
+    for (const image of rssImages) {
+      paths.set(image, 'channel/image');
+      structure(image, ['url', 'title', 'link', 'width', 'height', 'description'], 'channel/image');
+      field(image, 'title'); url(field(image, 'url'), 'channel/image/url'); url(field(image, 'link'), 'channel/image/link');
+    }
     const cats = select(channel, 'category', NS.itunes);
     if (!cats.length) add('ITUNES_CATEGORY', 'channel/itunes:category', 'Нужна хотя бы одна категория Apple Podcasts.');
     if (cats.length > 2) add('ITUNES_CATEGORY_COUNT', 'channel/itunes:category', 'Apple использует до двух категорий.', 'warning');
@@ -82,18 +100,21 @@ export function validate(xml: string): ValidationReport {
     const live = children(channel).filter(el => isPodcast(el.namespaceURI) && el.localName === 'liveItem');
     for (const [index, item] of [...items, ...live].entries()) {
       const isLive = isPodcast(item.namespaceURI);
-      const path = `channel/${isLive ? 'podcast:liveItem' : 'item'}[${index + 1}]`;
+      const path = `channel/${isLive ? 'podcast:liveItem' : 'item'}[${isLive ? index - items.length + 1 : index + 1}]`;
+      paths.set(item, path);
+      structure(item, ['title', 'link', 'description', 'author', 'category', 'comments', 'enclosure', 'guid', 'pubDate', 'source'], path);
       field(item, 'title'); field(item, 'description', '', !isLive);
       const guid = field(item, 'guid');
       if (guids.has(guid)) add('DUPLICATE_GUID', `${path}/guid`, 'GUID уже встречается в фиде.');
       guids.add(guid);
       const guidElement = select(item, 'guid')[0];
       const perma = guidElement?.getAttribute('isPermaLink');
-      if (perma && !['true', 'false'].includes(perma)) add('GUID_PERMALINK', `${path}/guid`, 'isPermaLink должен быть true или false.');
-      if ((!perma || perma === 'true') && !/^https?:\/\/\S+$/.test(guid)) add('GUID_PERMALINK', `${path}/guid`, 'Для непривязанного к URL GUID укажите isPermaLink=false.');
+      if (guidElement?.hasAttribute('isPermaLink') && !['true', 'false'].includes(perma ?? '')) add('GUID_PERMALINK', `${path}/guid`, 'isPermaLink должен быть true или false.');
+      if ((!perma || perma === 'true') && !httpsUrl(guid.replace(/^http:\/\//i, 'https://'))) add('GUID_PERMALINK', `${path}/guid`, 'Для непривязанного к HTTP(S) URL GUID укажите isPermaLink=false.');
       const enclosure = select(item, 'enclosure');
       if ((!isLive && enclosure.length !== 1) || enclosure.length > 1) add('RSS_ENCLOSURE', `${path}/enclosure`, 'Нужен ровно один enclosure у каждого эпизода.');
       for (const media of enclosure) {
+        empty(media, `${path}/enclosure`);
         const audioUrl = media.getAttribute('url') ?? '';
         url(audioUrl, `${path}/enclosure/@url`);
         if (!isLive) {
@@ -105,8 +126,9 @@ export function validate(xml: string): ValidationReport {
         }
         const length = media.getAttribute('length') ?? '';
         if (!integer(length) || (!isLive && Number(length) < 1)) add('ENCLOSURE_LENGTH', `${path}/enclosure/@length`, 'Укажите фактический размер файла в байтах, целое число больше нуля.');
-        const mime = media.getAttribute('type') ?? '';
-        if (!isLive && !['audio/mpeg', 'audio/mp4', 'audio/x-m4a'].includes(mime)) add('ENCLOSURE_TYPE', `${path}/enclosure/@type`, 'Для совместимости платформ основной файл должен быть MP3 (audio/mpeg) или AAC в MP4 (audio/mp4). Другие форматы задавайте через alternateEnclosure.');
+        const mediaType = media.getAttribute('type') ?? '';
+        if (!mime(mediaType)) add('ENCLOSURE_TYPE', `${path}/enclosure/@type`, 'Обязателен корректный MIME-тип.');
+        else if (!isLive && !['audio/mpeg', 'audio/mp4', 'audio/x-m4a'].includes(mediaType)) add('ENCLOSURE_TYPE', `${path}/enclosure/@type`, 'Для совместимости платформ основной файл должен быть MP3 (audio/mpeg) или AAC в MP4 (audio/mp4). Другие форматы задавайте через alternateEnclosure.');
       }
       const date = field(item, 'pubDate', '', !isLive);
       if (date && !rssDate(date)) add('RSS_DATE', `${path}/pubDate`, 'Нужна корректная дата RFC 2822 с часовым поясом.');

@@ -3,6 +3,8 @@ import type { Issue } from './core.ts';
 import { children, select } from './xml.ts';
 import type { Element } from './xml.ts';
 import { specData } from './spec-data.ts';
+import { recurrenceErrors } from './recurrence.ts';
+import { geoUri, aspectRatio, sri, imageSources } from './podcast-values.ts';
 
 type Check = (value: string) => boolean;
 interface Rule {
@@ -26,10 +28,6 @@ const mediums = ['podcast', 'music', 'video', 'film', 'audiobook', 'newsletter',
 const medium = oneOf(...mediums, ...mediums.map(m => `${m}L`), 'mixed');
 const dateOnly: Check = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && isoDate(`${s}T00:00:00Z`);
 const fqdn: Check = s => /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(s);
-const geo: Check = s => {
-  const m = /^geo:([+-]?[\d.]+),([+-]?[\d.]+)(?:,([+-]?[\d.]+))?(?:;[^\s]+)*$/.exec(s);
-  return !!m && Number.isFinite(Number(m[1])) && Math.abs(Number(m[1])) <= 90 && Number.isFinite(Number(m[2])) && Math.abs(Number(m[2])) <= 180;
-};
 // All canonized tags, including the deprecated images tag. Item children also work in liveItem.
 export const podcastRules: Record<string, Rule> = {
   transcript: { parents: ['item'], required: ['url', 'type'], attrs: { url: httpsUrl, type: mime, language, rel: oneOf('captions') } },
@@ -38,7 +36,7 @@ export const podcastRules: Record<string, Rule> = {
   chapters: { parents: ['item'], single: true, required: ['url', 'type'], attrs: { url: httpsUrl, type: mime } },
   soundbite: { parents: ['item'], required: ['startTime', 'duration'], attrs: { startTime: decimal, duration: positive }, text: () => true, maxText: 128 },
   person: { parents: ['channel', 'item'], attrs: { role: any, group: any, img: httpsUrl, href: httpsUrl }, text: text128, maxText: 128 },
-  location: { parents: ['channel', 'item'], attrs: { rel: oneOf('subject', 'creator'), geo, osm: s => /^[NWR]\d+$/i.test(s), country: s => /^[A-Z]{2}$/.test(s) }, text: text128, maxText: 128 },
+  location: { parents: ['channel', 'item'], attrs: { rel: oneOf('subject', 'creator'), geo: geoUri, osm: s => /^[NWR]\d+$/i.test(s), country: s => /^[A-Z]{2}$/.test(s) }, text: text128, maxText: 128 },
   season: { parents: ['item'], single: true, attrs: { name: any }, text: s => /^-?\d+$/.test(s) && Number.isSafeInteger(Number(s)) },
   episode: { parents: ['item'], single: true, attrs: { display: any }, text: s => /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(s) && Number.isFinite(Number(s)) },
   trailer: { parents: ['channel'], required: ['url', 'pubdate'], attrs: { url: httpsUrl, pubdate: rssDate, length: integer, type: mime, season: integer }, text: text128, maxText: 128 },
@@ -62,8 +60,8 @@ export const podcastRules: Record<string, Rule> = {
   valueTimeSplit: { parents: ['value'], required: ['startTime', 'duration'], attrs: { startTime: decimal, duration: positive, remoteStartTime: decimal, remotePercentage: s => /^-?\d+(?:\.\d+)?$/.test(s) }, children: ['remoteItem', 'valueRecipient'] },
   chat: { parents: ['channel', 'item'], single: true, required: ['server', 'protocol'], attrs: { server: fqdn, protocol: any, accountId: any, space: any } },
   publisher: { parents: ['channel'], single: true, children: ['remoteItem'], minChildren: { remoteItem: 1 } },
-  image: { parents: ['channel', 'item'], required: ['href'], attrs: { href: httpsUrl, alt: any, 'aspect-ratio': s => /^(?:\d+(?:\.\d+)?)(?:\s*\/\s*\d+(?:\.\d+)?)?$/.test(s) && s.split('/').every(n => Number(n) > 0), width: posInt, height: posInt, type: mime, purpose: any } },
-  images: { parents: ['channel', 'item'], single: true, required: ['srcset'], attrs: { srcset: s => s.split(',').every(part => { const m = /^(\S+)\s+(\d+(?:\.\d+)?)(w|x)$/.exec(part.trim()); return !!m && httpsUrl(m[1]!) && Number(m[2]) > 0; }) } },
+  image: { parents: ['channel', 'item'], required: ['href'], attrs: { href: httpsUrl, alt: () => true, 'aspect-ratio': aspectRatio, width: posInt, height: posInt, type: mime, purpose: any } },
+  images: { parents: ['channel', 'item'], single: true, required: ['srcset'], attrs: { srcset: imageSources } },
 };
 
 export function validatePodcastTree(root: Element): Issue[] {
@@ -79,8 +77,10 @@ export function validatePodcastTree(root: Element): Issue[] {
         const name = el.localName!;
         const rule = Object.hasOwn(podcastRules, name) ? podcastRules[name] : undefined;
         if (!rule) { add('PODCAST_UNKNOWN_TAG', p, 'Тег отсутствует в зафиксированной спецификации Podcasting 2.0.', 'warning'); visit(el, p); continue; }
-        const parentName = isPodcast(parent.namespaceURI) ? (parent.localName === 'liveItem' ? 'item' : parent.localName!) : (!parent.namespaceURI ? parent.localName! : 'foreign');
-        if (!rule.parents.includes(parentName)) add('PODCAST_PARENT', p, `Допустимые родители: ${rule.parents.join(', ')}.`);
+        const allowedParent = rule.parents.some(name => name === 'channel' || name === 'item'
+          ? (!parent.namespaceURI && parent.localName === name) || (name === 'item' && isPodcast(parent.namespaceURI) && parent.localName === 'liveItem')
+          : isPodcast(parent.namespaceURI) && parent.localName === name);
+        if (!allowedParent) add('PODCAST_PARENT', p, `Допустимые родители: ${rule.parents.join(', ')}; namespace родителя также должен совпадать.`);
         if (rule.single && select(parent, name, NS.podcast).length > 1 && index === 1) add('PODCAST_COUNT', p, 'Допускается только один такой тег у родителя.');
         for (const attr of rule.required ?? []) if (!el.getAttribute(attr)?.trim()) add('PODCAST_ATTRIBUTE_REQUIRED', `${p}/@${attr}`, 'Обязательный атрибут отсутствует или пуст.');
         for (const attr of Array.from(el.attributes)) {
@@ -128,10 +128,7 @@ export function validatePodcastTree(root: Element): Issue[] {
           if (recipients.length && recipients.every(r => Number(r.getAttribute('split')) === 0)) add('PODCAST_SPLITS', p, 'Сумма долей должна быть больше нуля.');
         }
         if (name === 'integrity') {
-          const valid = a('type') === 'sri' ? a('value').split(/\s+/).every(token => {
-            const match = /^sha(256|384|512)-([A-Za-z\d+/]+={0,2})$/.exec(token);
-            return !!match && Buffer.from(match[2]!, 'base64').length === Number(match[1]) / 8;
-          }) : /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(a('value'));
+          const valid = a('type') === 'sri' ? sri(a('value')) : /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(a('value'));
           if (!valid) add('PODCAST_INTEGRITY', p, 'Неверный синтаксис SRI/base64 подписи.');
         }
         if (name === 'liveItem') {
@@ -139,8 +136,17 @@ export function validatePodcastTree(root: Element): Issue[] {
           for (const required of ['title', 'guid']) if (!select(el, required)[0]?.textContent?.trim()) add('PODCAST_LIVE_REQUIRED', p, `Для liveItem нужен ${required}.`);
           if (!select(el, 'enclosure').length && !select(el, 'alternateEnclosure', NS.podcast).length) add('PODCAST_LIVE_MEDIA', p, 'Нужен enclosure или alternateEnclosure.');
         }
-        if (name === 'updateFrequency' && a('rrule')) validateRrule(a('rrule'), a('dtstart'), p, add);
+        if (name === 'updateFrequency' && a('rrule')) {
+          for (const message of recurrenceErrors(a('rrule'), a('dtstart'))) add(message.includes('dtstart') ? 'PODCAST_RRULE_START' : 'PODCAST_RRULE', p, message);
+        }
         if (name === 'images') add('PODCAST_DEPRECATED', p, 'images устарел; используйте image.', 'warning');
+        if (name === 'medium' && (value.endsWith('L') || value === 'mixed')) {
+          if (select(parent, 'item').length || select(parent, 'liveItem', NS.podcast).length) add('PODCAST_MEDIUM_ITEMS', p, 'List-фид ссылается на удалённые фиды и не должен содержать обычные item/liveItem.');
+          if (!select(parent, 'remoteItem', NS.podcast).length) add('PODCAST_MEDIUM_REMOTE', p, 'List-фид требует хотя бы один remoteItem.');
+        }
+        if (name === 'medium' && value === 'publisher') {
+          if (!select(parent, 'guid', NS.podcast).length || !select(parent, 'remoteItem', NS.podcast).length) add('PODCAST_PUBLISHER_REQUIRED', p, 'Publisher-фид требует podcast:guid и хотя бы один remoteItem.');
+        }
         if (name === 'txt' && a('purpose') === 'ai-content' && !bool(value)) add('PODCAST_AI_CONTENT', p, 'ai-content должен содержать true или false.');
         const limits: Record<string, Record<string, number>> = { season: { name: 128 }, episode: { display: 32 }, alternateEnclosure: { title: 32, rel: 32 }, txt: { purpose: 128 }, image: { purpose: 128 } };
         for (const [attr, limit] of Object.entries(limits[name] ?? {})) if ([...a(attr)].length > limit) add('PODCAST_ATTRIBUTE_LENGTH', `${p}/@${attr}`, `Рекомендуется не больше ${limit} символов.`, 'warning');
@@ -150,25 +156,4 @@ export function validatePodcastTree(root: Element): Issue[] {
   }
   visit(root, '/rss');
   return issues;
-}
-
-function validateRrule(rule: string, start: string, path: string, add: (code: string, path: string, message: string, severity?: Issue['severity']) => void): void {
-  const parts = rule.split(';').map(p => p.split('='));
-  const map = Object.fromEntries(parts);
-  const numericList = (s: string, max: number, zero: boolean, signed = false): boolean => s.split(',').every(v => (signed ? /^[+-]?\d+$/ : /^\d+$/).test(v) && Math.abs(Number(v)) <= max && (zero || Number(v) !== 0));
-  const checks: Record<string, Check> = {
-    FREQ: oneOf('SECONDLY', 'MINUTELY', 'HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'),
-    COUNT: posInt, INTERVAL: posInt,
-    UNTIL: s => isoDate(s) || dateOnly(s) || /^\d{8}(?:T\d{6}Z?)?$/.test(s),
-    BYSECOND: s => numericList(s, 60, true), BYMINUTE: s => numericList(s, 59, true), BYHOUR: s => numericList(s, 23, true),
-    BYDAY: s => s.split(',').every(v => /^(?:[+-]?(?:[1-9]|[1-4]\d|5[0-3]))?(?:MO|TU|WE|TH|FR|SA|SU)$/.test(v)),
-    BYMONTHDAY: s => numericList(s, 31, false, true), BYYEARDAY: s => numericList(s, 366, false, true), BYWEEKNO: s => numericList(s, 53, false, true),
-    BYMONTH: s => numericList(s, 12, false), BYSETPOS: s => numericList(s, 366, false, true), WKST: oneOf('MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'),
-  };
-  if (parts.some(p => p.length !== 2 || !Object.hasOwn(checks, p[0]!) || !checks[p[0]!]!(p[1]!)) || Object.keys(map).length !== parts.length || !map.FREQ || (map.COUNT && map.UNTIL)) add('PODCAST_RRULE', path, 'Некорректные компоненты RRULE.');
-  if (map.COUNT && !start) add('PODCAST_RRULE_START', path, 'RRULE с COUNT требует dtstart.');
-  if (map.UNTIL && start && map.UNTIL.includes('T') !== start.includes('T')) add('PODCAST_RRULE_START', path, 'dtstart и UNTIL должны использовать один тип: date или datetime.');
-  if (map.BYSETPOS && !Object.keys(map).some(k => k.startsWith('BY') && k !== 'BYSETPOS')) add('PODCAST_RRULE', path, 'BYSETPOS требует другого компонента BY*.');
-  if (map.BYWEEKNO && map.FREQ !== 'YEARLY') add('PODCAST_RRULE', path, 'BYWEEKNO применим только к YEARLY.');
-  if (map.BYMONTHDAY && map.FREQ === 'WEEKLY') add('PODCAST_RRULE', path, 'BYMONTHDAY неприменим к WEEKLY.');
 }

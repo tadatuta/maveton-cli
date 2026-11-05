@@ -38,6 +38,17 @@ function bool(o: Record<string, unknown>, key: string, required: boolean, path: 
 function number(o: Record<string, unknown>, key: string, min: number, path: string): void {
   if (typeof o[key] !== 'number' || !Number.isSafeInteger(o[key]) || (o[key] as number) < min) throw new CliError('INPUT_TYPE', `${path}.${key}: ожидается целое число ≥ ${min}.`);
 }
+// Numeric YAML/JSON scalars such as 0.00000005 must not become the XML decimal "5e-8".
+function scalar(value: string | number | boolean): string {
+  const text = String(value);
+  if (typeof value !== 'number' || !/[eE]/.test(text)) return text;
+  const [coefficient, exponent] = text.toLowerCase().split('e');
+  const sign = coefficient!.startsWith('-') ? '-' : '';
+  const unsigned = coefficient!.replace(/^-/, '');
+  const digits = unsigned.replace('.', '');
+  const point = (unsigned.includes('.') ? unsigned.indexOf('.') : unsigned.length) + Number(exponent);
+  return sign + (point <= 0 ? `0.${'0'.repeat(-point)}${digits}` : point >= digits.length ? digits + '0'.repeat(point - digits.length) : `${digits.slice(0, point)}.${digits.slice(point)}`);
+}
 function tags(value: unknown, path: string, depth = 0): Tag[] {
   if (!Array.isArray(value) || depth > 32) throw new CliError('INPUT_TAGS', `${path}: ожидается массив тегов, глубина не больше 32.`);
   return value.map((item: unknown, index: number) => {
@@ -52,13 +63,13 @@ function tags(value: unknown, path: string, depth = 0): Tag[] {
     const result: Tag = { tag: qualified };
     if (o.text !== undefined) {
       if (!['string', 'number', 'boolean'].includes(typeof o.text) || !xmlChars(String(o.text)) || (typeof o.text === 'number' && !Number.isFinite(o.text))) throw new CliError('INPUT_TAG', `${p}.text: ожидается строка, число или boolean.`);
-      result.text = String(o.text);
+      result.text = scalar(o.text as string | number | boolean);
     }
     if (o.attributes !== undefined) {
-      result.attributes = {};
+      result.attributes = Object.create(null) as Record<string, string>;
       for (const [key, value] of Object.entries(object(o.attributes, `${p}.attributes`))) {
         if (!/^[A-Za-z_][\w.-]*$/.test(key) || key === 'xmlns' || !['string', 'number', 'boolean'].includes(typeof value) || !xmlChars(String(value)) || (typeof value === 'number' && !Number.isFinite(value))) throw new CliError('INPUT_TAG', `${p}.attributes.${key}: недопустимое имя или значение атрибута.`);
-        result.attributes[key] = String(value);
+        result.attributes[key] = scalar(value as string | number | boolean);
       }
     }
     if (o.children !== undefined) result.children = tags(o.children, `${p}.children`, depth + 1);
