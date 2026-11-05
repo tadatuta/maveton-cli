@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tgz
+*.bak-*
+.DS_Store
+coverage/

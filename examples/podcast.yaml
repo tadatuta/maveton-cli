@@ -1,0 +1,31 @@
+# Замените example.com, автора и контакт своими данными.
+title: Моветон
+description: Разговоры о технологиях, людях и неудобных вопросах.
+link: https://example.com/podcast
+feedUrl: https://example.com/podcast/rss.xml
+language: ru
+author: Команда Моветона
+explicit: false
+image: https://example.com/podcast/cover.jpg
+owner:
+  name: Редакция Моветона
+  email: podcast@example.com
+categories:
+  - name: Technology
+  - name: Society & Culture
+    subcategory: Relationships
+type: episodic
+copyright: © 2026 Моветон
+podcast:
+  - tag: locked
+    text: 'yes'
+    attributes:
+      owner: podcast@example.com
+  - tag: medium
+    text: podcast
+  - tag: person
+    text: Имя ведущего
+    attributes:
+      role: host
+      group: cast
+      href: https://example.com/team/host

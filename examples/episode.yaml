@@ -1,0 +1,34 @@
+# id — постоянный идентификатор внутри подкаста. Не меняйте после публикации.
+id: episode-001
+title: Первый выпуск — знакомимся
+description: Обсуждаем, зачем мы начали этот подкаст и чего ждать дальше.
+publishedAt: '2026-01-01T12:00:00+03:00'
+enclosure:
+  url: https://example.com/audio/episode-001.mp3
+  length: 42817536 # Фактический размер файла в байтах; не длительность.
+  type: audio/mpeg
+duration: 2676 # Целые секунды; необязательно, но рекомендуется.
+explicit: false
+episode: 1
+season: 1
+episodeType: full
+link: https://example.com/podcast/episodes/001
+contentHtml: |
+  <p>Обсуждаем, зачем мы начали этот подкаст.</p>
+  <ul><li>Знакомство с ведущими</li><li>Планы на сезон</li></ul>
+podcast:
+  - tag: transcript
+    attributes:
+      url: https://example.com/transcripts/001.vtt
+      type: text/vtt
+      language: ru
+      rel: captions
+  - tag: chapters
+    attributes:
+      url: https://example.com/chapters/001.json
+      type: application/json+chapters
+  - tag: soundbite
+    text: Зачем мы записываем подкаст
+    attributes:
+      startTime: 73.5
+      duration: 42

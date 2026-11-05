@@ -1,0 +1,54 @@
+id: advanced-001
+title: Все расширения эпизода
+description: Пример вложенных тегов Podcasting 2.0.
+publishedAt: '2026-01-01T12:00:00+03:00'
+enclosure: { url: 'https://example.com/advanced.mp3', length: 48000000, type: audio/mpeg }
+duration: 3000
+explicit: false
+episode: 1
+season: 1
+podcast:
+  - tag: transcript
+    attributes: { url: 'https://example.com/advanced.vtt', type: text/vtt, language: ru, rel: captions }
+  - tag: chapters
+    attributes: { url: 'https://example.com/advanced.chapters.json', type: application/json+chapters }
+  - tag: soundbite
+    text: Главный вопрос
+    attributes: { startTime: 60, duration: 30 }
+  - tag: season
+    text: 1
+    attributes: { name: Первый сезон }
+  - tag: episode
+    text: 1.5
+    attributes: { display: 'Спецвыпуск 1½' }
+  - tag: alternateEnclosure
+    attributes: { type: audio/opus, length: 24000000, bitrate: 64000, lang: ru, title: Opus, rel: default, codecs: opus, default: false }
+    children:
+      - tag: source
+        attributes: { uri: 'https://example.com/advanced.opus', contentType: audio/opus }
+      - tag: source
+        attributes: { uri: 'ipfs://bafyexample' }
+      - tag: integrity
+        attributes: { type: sri, value: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }
+  - tag: value
+    attributes: { type: lightning, method: lnaddress, suggested: '0.00000005' }
+    children:
+      - tag: valueRecipient
+        attributes: { type: lnaddress, address: host@example.com, name: Ведущий, split: 100 }
+      - tag: valueTimeSplit
+        attributes: { startTime: 60, duration: 120, remoteStartTime: 0, remotePercentage: 90 }
+        children:
+          - tag: remoteItem
+            attributes: { feedGuid: 9b024349-ccf0-5f69-a609-6b82873eab3c, itemGuid: remote-001, medium: music }
+      - tag: valueTimeSplit
+        attributes: { startTime: 180, duration: 60 }
+        children:
+          - tag: valueRecipient
+            attributes: { type: lnaddress, address: guest@example.com, name: Гость, split: 100 }
+  - tag: contentLink
+    text: Видео выпуска
+    attributes: { href: 'https://example.com/video' }
+  - tag: socialInteract
+    attributes: { protocol: activitypub, uri: 'https://social.example.com/@host/123', accountId: '@host', accountUrl: 'https://social.example.com/@host', priority: 1 }
+  - tag: images # Устаревший тег поддерживается, но вызывает предупреждение.
+    attributes: { srcset: 'https://example.com/art-1500.jpg 1500w, https://example.com/art-600.jpg 600w' }

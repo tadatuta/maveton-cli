@@ -1,0 +1,16 @@
+{
+  "id": "episode-002",
+  "title": "Второй выпуск",
+  "description": "Краткое описание выпуска.",
+  "publishedAt": "2026-01-08T12:00:00+03:00",
+  "enclosure": {
+    "url": "https://example.com/audio/episode-002.mp3",
+    "length": 32000000,
+    "type": "audio/mpeg"
+  },
+  "duration": 2000,
+  "explicit": false,
+  "episode": 2,
+  "season": 1,
+  "episodeType": "full"
+}

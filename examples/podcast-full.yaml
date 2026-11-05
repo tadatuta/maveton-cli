@@ -1,0 +1,76 @@
+title: Подкаст с Podcasting 2.0
+description: Пример всех расширений уровня channel.
+link: https://example.com/show
+feedUrl: https://example.com/show/rss.xml
+language: ru
+author: Редакция
+image: https://example.com/cover.jpg
+explicit: false
+owner: { name: Редакция, email: editor@example.com }
+categories: [{ name: Technology }]
+podcast:
+  - tag: guid
+    text: 917393e3-1b1e-5cef-ace4-edaa54e1f810
+  - tag: locked
+    text: 'yes'
+    attributes: { owner: editor@example.com }
+  - tag: funding
+    text: Поддержать
+    attributes: { url: 'https://example.com/support' }
+  - tag: person
+    text: Анна
+    attributes: { role: host, group: cast, img: 'https://example.com/anna.jpg', href: 'https://example.com/anna' }
+  - tag: location
+    text: Москва
+    attributes: { rel: creator, geo: 'geo:55.7558,37.6173', osm: R2555133, country: RU }
+  - tag: trailer
+    text: Трейлер первого сезона
+    attributes: { url: 'https://example.com/trailer.mp3', pubdate: 'Thu, 01 Jan 2026 09:00:00 +0000', length: 2400000, type: audio/mpeg, season: 1 }
+  - tag: license
+    text: cc-by-4.0
+  - tag: medium
+    text: podcast
+  - tag: value
+    attributes: { type: lightning, method: keysend, suggested: '0.00000005' }
+    children:
+      - tag: valueRecipient
+        attributes: { name: Автор, type: lnaddress, address: creator@example.com, split: 100 }
+  - tag: socialInteract
+    attributes: { protocol: disabled }
+  - tag: block
+    text: 'no'
+  - tag: txt
+    text: 'false'
+    attributes: { purpose: ai-content }
+  - tag: remoteItem
+    attributes: { feedGuid: 9b024349-ccf0-5f69-a609-6b82873eab3c, feedUrl: 'https://podnews.net/rss', title: Podnews }
+  - tag: podroll
+    children:
+      - tag: remoteItem
+        attributes: { feedGuid: 9b024349-ccf0-5f69-a609-6b82873eab3c, feedUrl: 'https://podnews.net/rss', title: Podnews }
+  - tag: updateFrequency
+    text: По четвергам
+    attributes: { rrule: 'FREQ=WEEKLY;BYDAY=TH' }
+  - tag: podping
+    attributes: { usesPodping: false } # CLI не отправляет уведомления Podping.
+  - tag: chat
+    attributes: { server: chat.example.com, protocol: matrix, accountId: '@author:chat.example.com', space: '#podcast:chat.example.com' }
+  - tag: publisher
+    children:
+      - tag: remoteItem
+        attributes: { feedGuid: 003af0a0-6a45-55cf-b765-68e3d349551a, feedUrl: 'https://example.com/publisher.xml', medium: publisher }
+  - tag: image
+    attributes: { href: 'https://example.com/banner.jpg', alt: Обложка подкаста, aspect-ratio: '16/9', width: 1920, height: 1080, type: image/jpeg, purpose: 'artwork social' }
+  - tag: liveItem
+    attributes: { status: ended, start: '2026-01-01T12:00:00+03:00', end: '2026-01-01T13:00:00+03:00' }
+    children:
+      - tag: rss:title
+        text: Пример завершённого эфира
+      - tag: rss:guid
+        text: live-2026-001
+        attributes: { isPermaLink: false }
+      - tag: rss:enclosure
+        attributes: { url: 'https://example.com/live.mp3', type: audio/mpeg, length: 0 }
+      - tag: contentLink
+        attributes: { href: 'https://example.com/live' }
+        text: Страница трансляции
