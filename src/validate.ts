@@ -146,6 +146,7 @@ export function validate(xml: string): ValidationReport {
         if (value && (!integer(value) || Number(value) < 1)) add('ITUNES_NUMBER', `${path}/itunes:${name}`, 'Ожидается положительное целое число.');
       }
       const link = field(item, 'link', '', false); if (link) url(link, `${path}/link`);
+      if (!isLive && !select(item, 'link').length) add('RSS_ITEM_LINK_MISSING', `${path}/link`, 'Рекомендуется указать HTTPS-страницу выпуска в item/link; приложения используют её для подробностей выпуска.', 'warning');
       artwork(item, false, `${path}/itunes:image`);
     }
     for (const block of select(channel, 'block', NS.podcast)) if (block.textContent?.trim() === 'yes') add('PLATFORM_BLOCKED', 'channel/podcast:block', 'Фид запрещает импорт всем или выбранной платформе; проверьте намерение.', 'warning');

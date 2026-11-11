@@ -12,5 +12,6 @@
   "explicit": false,
   "episode": 2,
   "season": 1,
-  "episodeType": "full"
+  "episodeType": "full",
+  "link": "https://example.com/podcast/episodes/002"
 }

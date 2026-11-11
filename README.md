@@ -212,7 +212,7 @@ duration: 2000
 | `episode` | Для полного выпуска serial-шоу | Положительный целый номер выпуска → `itunes:episode` |
 | `season` | Нет | Положительный целый номер сезона → `itunes:season` |
 | `episodeType` | Нет | `full` по умолчанию, `trailer` или `bonus` |
-| `link` | Нет | HTTPS-страница выпуска |
+| `link` | Нет, рекомендуется | HTTPS-страница выпуска; отсутствие даёт предупреждение `RSS_ITEM_LINK_MISSING` и блокирует запись с `--strict` |
 | `author` | Нет | Автор именно этого выпуска |
 | `image` | Нет | HTTPS-ссылка на отдельную обложку |
 | `contentHtml` | Нет | Расширенная аннотация → `content:encoded` |

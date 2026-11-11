@@ -157,3 +157,24 @@ test('serial shows require episode number for full episodes', () => {
   const xml = make({ ...podcast, type: 'serial' }, { ...episode, episode: undefined });
   assert.ok(validate(xml).issues.some(i => i.code === 'RSS_REQUIRED'));
 });
+
+
+test('missing episode website is a warning for full, trailer and bonus episodes', () => {
+  for (const episodeType of ['full', 'trailer', 'bonus']) {
+    const missing = { ...episode, episodeType }; delete missing.link;
+    const report = validate(make(podcast, missing));
+    assert.equal(report.valid, true); assert.equal(report.errors, 0);
+    assert.equal(report.warnings, 1);
+    assert.equal(report.issues[0].code, 'RSS_ITEM_LINK_MISSING');
+    assert.equal(report.issues[0].severity, 'warning');
+    assert.equal(report.issues[0].path, 'channel/item[1]/link');
+  }
+  assert.equal(validate(make()).warnings, 0);
+  const xml = make();
+  for (const value of ['', 'http://example.com/episode']) {
+    const invalid = xml.replace(`<link>${episode.link}</link>`, `<link>${value}</link>`);
+    const report = validate(invalid);
+    assert.ok(report.errors > 0);
+    assert.ok(!report.issues.some(issue => issue.code === 'RSS_ITEM_LINK_MISSING'));
+  }
+});

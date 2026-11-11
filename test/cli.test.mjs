@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -124,4 +124,44 @@ test('HTTP downgrade, redirect loops, oversized and HTTP error responses fail', 
   await assert.rejects(readFeed('https://example.com/rss', async () => new Response('', { headers: { 'content-length': String(FEED_LIMIT + 1) } })), /20 MiB/);
   await assert.rejects(readFeed('https://example.com/rss', async () => new Response('oops', { status: 503 })), /HTTP 503/);
   await assert.rejects(readFeed('https://example.com/rss', async () => new Response('x'.repeat(FEED_LIMIT + 1))), /20 MiB/);
+});
+
+
+test('missing episode link warns normally and strict blocks creation and overwrite', async t => {
+  const { dir, file } = await fixture(t);
+  const input = join(dir, 'missing-link.json');
+  const obj = JSON.parse(await readFile(second, 'utf8')); delete obj.link;
+  await writeFile(input, JSON.stringify(obj));
+  const before = await readFile(file);
+  const entries = (await readdir(dir)).sort();
+  for (const output of [join(dir, 'new.xml'), file]) {
+    const args = ['add', '--feed', file, '--episode', input, '--output', output, '--strict', '--json'];
+    if (output === file) args.push('--overwrite');
+    const result = run(...args); const report = JSON.parse(result.stdout);
+    assert.equal(result.status, 1, result.stdout);
+    assert.equal(report.ok, false); assert.equal(report.validation.valid, true);
+    assert.equal(report.validation.errors, 0); assert.equal(report.validation.warnings, 1);
+    assert.equal(report.validation.issues[0].code, 'RSS_ITEM_LINK_MISSING');
+    assert.equal(report.written, undefined);
+    assert.deepEqual(await readFile(file), before);
+    assert.deepEqual((await readdir(dir)).sort(), entries, 'no output, backup, lock or temp files');
+  }
+  const output = join(dir, 'ordinary.xml');
+  const ordinary = run('add', '--feed', file, '--episode', input, '--output', output, '--json');
+  const report = JSON.parse(ordinary.stdout);
+  assert.equal(ordinary.status, 0, ordinary.stdout); assert.equal(report.ok, true);
+  assert.equal(report.validation.warnings, 1); assert.equal(report.validation.issues[0].code, 'RSS_ITEM_LINK_MISSING');
+  assert.equal(report.written.output, await realpath(output));
+  for (const strict of [false, true]) {
+    const result = run('validate', '--feed', output, '--json', ...(strict ? ['--strict'] : []));
+    assert.equal(result.status, strict ? 1 : 0, result.stdout);
+    const validation = JSON.parse(result.stdout);
+    assert.equal(validation.valid, true); assert.equal(validation.ok, !strict);
+    assert.equal(validation.issues[0].code, 'RSS_ITEM_LINK_MISSING');
+  }
+  const existing = await readFile(output); const existingEntries = (await readdir(dir)).sort();
+  const rejected = run('add', '--feed', output, '--episode', episode, '--output', output, '--overwrite', '--strict', '--json');
+  assert.equal(rejected.status, 1); assert.equal(JSON.parse(rejected.stdout).phase, 'source');
+  assert.deepEqual(await readFile(output), existing);
+  assert.deepEqual((await readdir(dir)).sort(), existingEntries);
 });

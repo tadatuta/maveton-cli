@@ -253,3 +253,10 @@ test('UTF-8 BOM is kept in snapshots and oversized output is rejected before wri
   await assert.rejects(writeAtomic(join(dir, 'out'), huge), e => e.code === 'FEED_SIZE');
   assert.deepEqual(await fs.readdir(dir), ['source']);
 });
+
+
+test('missing liveItem link does not trigger the episode website warning', () => {
+  const report = validate(withChannel(live));
+  assert.equal(report.errors, 0);
+  assert.ok(!report.issues.some(issue => issue.code === 'RSS_ITEM_LINK_MISSING'));
+});
